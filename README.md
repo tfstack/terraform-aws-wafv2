@@ -1,15 +1,8 @@
-# Terraform AWS WAFv2 Module
+# Terraform AWS WAFv2
 
 Terraform module to create and manage AWS WAFv2 Web ACLs and resource associations
 
 <!-- BEGIN_TF_DOCS -->
-# Terraform AWS WAFv2 Module
-
-Terraform module to create and manage AWS WAFv2 Web ACLs and resource associations
-
-<!-- BEGIN\_TF\_DOCS -->
-<!-- END\_TF\_DOCS -->
-
 ## Inputs
 
 | Name | Description | Type | Default | Required |
