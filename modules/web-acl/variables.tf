@@ -51,15 +51,15 @@ variable "managed_rule_sets" {
   default = []
 
   validation {
-    condition = alltrue([
-      for rule in var.managed_rule_sets : contains(["none", "count"], rule.override_action)
+    condition = var.managed_rule_sets == null || alltrue([
+      for rule in coalesce(var.managed_rule_sets, []) : contains(["none", "count"], rule.override_action)
     ])
     error_message = "managed_rule_sets: override_action must be 'none' or 'count'."
   }
 
   validation {
-    condition = alltrue([
-      for rule in var.managed_rule_sets : contains([
+    condition = var.managed_rule_sets == null || alltrue([
+      for rule in coalesce(var.managed_rule_sets, []) : contains([
         "AWSManagedRulesCommonRuleSet",
         "AWSManagedRulesKnownBadInputsRuleSet",
         "AWSManagedRulesLinuxRuleSet",
@@ -79,7 +79,7 @@ variable "managed_rule_sets" {
   }
 }
 
-# Rules Configuration - All rules defined here, no hardcoded rules
+# All rules
 variable "rules" {
   description = "WAF rules to apply (in priority order)"
   type = list(object({
@@ -96,31 +96,34 @@ variable "rules" {
     comparison_operator      = optional(string, null)
     limit                    = optional(number, null)
     aggregate_key_type       = optional(string, null)
+    evaluation_window_sec    = optional(number, null)
     ip_set_arn               = optional(string, null)
     country_codes            = optional(list(string), null)
+    regex_string             = optional(string, null)
     custom_response_body_key = optional(string, null)
     response_code            = optional(number, null)
     response_headers         = optional(map(string), {})
+    negated                  = optional(bool, false)
   }))
   default = []
 
   validation {
-    condition = alltrue([
-      for r in var.rules : contains(["allow", "block", "count"], r.action)
+    condition = var.rules == null || alltrue([
+      for r in coalesce(var.rules, []) : contains(["allow", "block", "count"], r.action)
     ])
     error_message = "rules: action must be 'allow', 'block', or 'count'."
   }
 
   validation {
-    condition = alltrue([
-      for r in var.rules : contains(["byte_match", "size_constraint", "rate_based", "ip_set", "geo_match"], r.statement_type)
+    condition = var.rules == null || alltrue([
+      for r in coalesce(var.rules, []) : contains(["byte_match", "size_constraint", "rate_based", "ip_set", "geo_match", "regex_match"], r.statement_type)
     ])
-    error_message = "rules: statement_type must be 'byte_match', 'size_constraint', 'rate_based', 'ip_set', or 'geo_match'."
+    error_message = "rules: statement_type must be 'byte_match', 'size_constraint', 'rate_based', 'ip_set', 'geo_match', or 'regex_match'."
   }
 
   validation {
-    condition = alltrue([
-      for r in var.rules : r.statement_type != "byte_match" || (
+    condition = var.rules == null || alltrue([
+      for r in coalesce(var.rules, []) : r.statement_type != "byte_match" || (
         r.search_string != null && r.search_string != "" &&
         r.text_transformation != null && r.text_transformation != "" &&
         r.positional_constraint != null && r.positional_constraint != "" &&
@@ -132,8 +135,8 @@ variable "rules" {
   }
 
   validation {
-    condition = alltrue([
-      for r in var.rules : r.statement_type != "size_constraint" || (
+    condition = var.rules == null || alltrue([
+      for r in coalesce(var.rules, []) : r.statement_type != "size_constraint" || (
         r.size != null && r.comparison_operator != null &&
         r.field_to_match != null && r.field_to_match != "" &&
         (r.field_to_match != "header" || (r.header_name != null && r.header_name != ""))
@@ -143,8 +146,8 @@ variable "rules" {
   }
 
   validation {
-    condition = alltrue([
-      for r in var.rules : r.statement_type != "rate_based" || (
+    condition = var.rules == null || alltrue([
+      for r in coalesce(var.rules, []) : r.statement_type != "rate_based" || (
         r.limit != null && r.aggregate_key_type != null
       )
     ])
@@ -152,8 +155,8 @@ variable "rules" {
   }
 
   validation {
-    condition = alltrue([
-      for r in var.rules : r.statement_type != "ip_set" || (
+    condition = var.rules == null || alltrue([
+      for r in coalesce(var.rules, []) : r.statement_type != "ip_set" || (
         r.ip_set_arn != null && r.ip_set_arn != ""
       )
     ])
@@ -161,12 +164,23 @@ variable "rules" {
   }
 
   validation {
-    condition = alltrue([
-      for r in var.rules : r.statement_type != "geo_match" || (
+    condition = var.rules == null || alltrue([
+      for r in coalesce(var.rules, []) : r.statement_type != "geo_match" || (
         try(r.country_codes, null) != null && try(length(r.country_codes), 0) > 0
       )
     ])
     error_message = "rules: geo_match requires country_codes."
+  }
+
+  validation {
+    condition = var.rules == null || alltrue([
+      for r in coalesce(var.rules, []) : r.statement_type != "regex_match" || (
+        r.regex_string != null && r.regex_string != "" &&
+        r.field_to_match != null && r.field_to_match != "" &&
+        (r.field_to_match != "header" || (r.header_name != null && r.header_name != ""))
+      )
+    ])
+    error_message = "rules: regex_match requires regex_string, field_to_match, and header_name if field_to_match is 'header'."
   }
 }
 
@@ -220,6 +234,29 @@ variable "alarm_threshold" {
   description = "Threshold for rule alarms (blocked requests per 5 minutes)"
   type        = number
   default     = 10
+}
+
+# Default Rules
+variable "default_rules" {
+  description = "Enable/disable default security rules"
+  type = object({
+    block_disallowed_methods = optional(bool, false)
+    general_rate_limit       = optional(bool, false)
+  })
+  default = {}
+}
+
+# Default Managed Rule Sets
+variable "default_managed_rule_sets" {
+  description = "Enable/disable default managed rule sets"
+  type = object({
+    core_rule_set    = optional(bool, false)
+    known_bad_inputs = optional(bool, false)
+    sql_injection    = optional(bool, false)
+    ip_reputation    = optional(bool, false)
+    anonymous_ip     = optional(bool, false)
+  })
+  default = {}
 }
 
 # Custom Response Bodies

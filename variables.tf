@@ -51,8 +51,8 @@ variable "managed_rule_sets" {
   default = []
 
   validation {
-    condition = alltrue([
-      for rule in var.managed_rule_sets : contains(["none", "count"], rule.override_action)
+    condition = var.managed_rule_sets == null || alltrue([
+      for rule in coalesce(var.managed_rule_sets, []) : contains(["none", "count"], rule.override_action)
     ])
     error_message = "managed_rule_sets: override_action must be 'none' or 'count'."
   }
@@ -75,11 +75,14 @@ variable "rules" {
     comparison_operator      = optional(string, null)
     limit                    = optional(number, null)
     aggregate_key_type       = optional(string, null)
+    evaluation_window_sec    = optional(number, null)
     ip_set_arn               = optional(string, null)
     country_codes            = optional(list(string), null)
+    regex_string             = optional(string, null)
     custom_response_body_key = optional(string, null)
     response_code            = optional(number, null)
     response_headers         = optional(map(string), {})
+    negated                  = optional(bool, false)
   }))
   default = []
 
@@ -92,9 +95,9 @@ variable "rules" {
 
   validation {
     condition = alltrue([
-      for r in var.rules : contains(["byte_match", "size_constraint", "rate_based", "ip_set", "geo_match"], r.statement_type)
+      for r in var.rules : contains(["byte_match", "size_constraint", "rate_based", "ip_set", "geo_match", "regex_match"], r.statement_type)
     ])
-    error_message = "rules: statement_type must be 'byte_match', 'size_constraint', 'rate_based', 'ip_set', or 'geo_match'."
+    error_message = "rules: statement_type must be 'byte_match', 'size_constraint', 'rate_based', 'ip_set', 'geo_match', or 'regex_match'."
   }
 
   validation {
@@ -146,6 +149,17 @@ variable "rules" {
       )
     ])
     error_message = "rules: geo_match requires country_codes."
+  }
+
+  validation {
+    condition = alltrue([
+      for r in var.rules : r.statement_type != "regex_match" || (
+        r.regex_string != null && r.regex_string != "" &&
+        r.field_to_match != null && r.field_to_match != "" &&
+        (r.field_to_match != "header" || (r.header_name != null && r.header_name != ""))
+      )
+    ])
+    error_message = "rules: regex_match requires regex_string, field_to_match, and header_name if field_to_match is 'header'."
   }
 }
 
@@ -206,6 +220,29 @@ variable "alarm_threshold" {
   description = "Threshold for WAF rule alarms"
   type        = number
   default     = 10
+}
+
+# Default Rules
+variable "default_rules" {
+  description = "Enable/disable default security rules"
+  type = object({
+    block_disallowed_methods = optional(bool, false)
+    general_rate_limit       = optional(bool, false)
+  })
+  default = {}
+}
+
+# Default Managed Rule Sets
+variable "default_managed_rule_sets" {
+  description = "Enable/disable default managed rule sets"
+  type = object({
+    core_rule_set    = optional(bool, false)
+    known_bad_inputs = optional(bool, false)
+    sql_injection    = optional(bool, false)
+    ip_reputation    = optional(bool, false)
+    anonymous_ip     = optional(bool, false)
+  })
+  default = {}
 }
 
 # Custom Response Bodies

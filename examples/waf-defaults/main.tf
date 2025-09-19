@@ -169,115 +169,136 @@ module "waf" {
   scope       = "REGIONAL"
   tags        = local.tags
 
+  # IP sets for exclusions
+  ip_sets = {
+    allowed_ips = {
+      name      = "${local.base_name}-allowed-ips"
+      addresses = ["203.0.113.0/24", "198.51.100.0/24"]
+    }
+    blocked_ips = {
+      name      = "${local.base_name}-blocked-ips"
+      addresses = ["10.0.0.100/32"]
+    }
+  }
+
+  # Custom response bodies
+  custom_response_bodies = {
+    blocked_ip_message = {
+      key = "blocked_ip_message"
+      content = jsonencode({
+        error   = "Access Denied"
+        message = "Your IP address has been blocked"
+        code    = "BLOCKED_IP"
+      })
+      content_type = "APPLICATION_JSON"
+    }
+    rate_limit_message = {
+      key = "rate_limit_message"
+      content = jsonencode({
+        error       = "Rate Limit Exceeded"
+        message     = "Too many requests. Please try again later."
+        code        = "RATE_LIMITED"
+        retry_after = "300"
+      })
+      content_type = "APPLICATION_JSON"
+    }
+  }
 
   # Custom Rules
+  default_rules = {
+    block_disallowed_methods = true
+    general_rate_limit       = true
+  }
+
+  # Default managed rule sets
+  default_managed_rule_sets = {
+    core_rule_set    = true
+    known_bad_inputs = true
+    sql_injection    = true
+  }
+
   rules = [
-    {
-      name                  = "BlockDELETE"
-      priority              = 1
-      action                = "block"
-      statement_type        = "byte_match"
-      search_string         = "DELETE"
-      field_to_match        = "method"
-      text_transformation   = "NONE"
-      positional_constraint = "EXACTLY"
-    },
-    {
-      name                  = "BlockPATCH"
-      priority              = 2
-      action                = "block"
-      statement_type        = "byte_match"
-      search_string         = "PATCH"
-      field_to_match        = "method"
-      text_transformation   = "NONE"
-      positional_constraint = "EXACTLY"
-    },
-    {
-      name                  = "BlockOPTIONS"
-      priority              = 3
-      action                = "block"
-      statement_type        = "byte_match"
-      search_string         = "OPTIONS"
-      field_to_match        = "method"
-      text_transformation   = "NONE"
-      positional_constraint = "EXACTLY"
-    },
-    {
-      name                  = "BlockTRACE"
-      priority              = 4
-      action                = "block"
-      statement_type        = "byte_match"
-      search_string         = "TRACE"
-      field_to_match        = "method"
-      text_transformation   = "NONE"
-      positional_constraint = "EXACTLY"
-    },
-    {
-      name                  = "BlockCONNECT"
-      priority              = 5
-      action                = "block"
-      statement_type        = "byte_match"
-      search_string         = "CONNECT"
-      field_to_match        = "method"
-      text_transformation   = "NONE"
-      positional_constraint = "EXACTLY"
-    }
+    # {
+    #   name           = "BlockedMethods"
+    #   priority       = 2
+    #   action         = "block"
+    #   statement_type = "regex_match"
+    #   regex_string   = "GET|HEAD|OPTIONS|POST|PUT"
+    #   field_to_match = "method"
+    #   negated        = true # This will create a not_statement wrapper
+    #   response_code  = 405
+    # }
+    # Rate limit last (only rate-limit requests that weren't already blocked/allowed)
+    # {
+    #   name                     = "GeneralRateLimit"
+    #   priority                 = 10
+    #   action                   = "block"
+    #   statement_type           = "rate_based"
+    #   limit                    = 1000
+    #   aggregate_key_type       = "IP"
+    #   custom_response_body_key = "rate_limit_message"
+    #   response_code            = 429
+    #   response_headers = {
+    #     "Retry-After"  = "60"
+    #     "X-Rate-Limit" = "1000"
+    #   }
+    # }
   ]
 
   # AWS Managed Rule Sets
   managed_rule_sets = [
-    {
-      name            = "AWSManagedRulesCommonRuleSet"
-      priority        = 200
-      rule_group_name = "AWSManagedRulesCommonRuleSet"
-      override_action = "none"
-      rule_action_overrides = {
-        "CrossSiteScripting_QUERYARGUMENTS" = "block"
-        "CrossSiteScripting_BODY"           = "block"
-        "CrossSiteScripting_COOKIE"         = "block"
-        "CrossSiteScripting_URIPATH"        = "block"
-      }
-    },
-    {
-      name            = "AWSManagedRulesSQLiRuleSet"
-      priority        = 300
-      rule_group_name = "AWSManagedRulesSQLiRuleSet"
-      override_action = "none"
-      rule_action_overrides = {
-        "SQLi_QUERYARGUMENTS" = "block"
-        "SQLi_BODY"           = "block"
-        "SQLi_COOKIE"         = "block"
-        "SQLi_URIPATH"        = "block"
-      }
-    },
-    {
-      name            = "AWSManagedRulesLinuxRuleSet"
-      priority        = 400
-      rule_group_name = "AWSManagedRulesLinuxRuleSet"
-      override_action = "none"
-      rule_action_overrides = {
-        "LFI_QUERYSTRING" = "block"
-        "LFI_URIPATH"     = "block"
-        "LFI_HEADER"      = "block"
-      }
-    },
-    {
-      name            = "AWSManagedRulesBotControlRuleSet"
-      priority        = 500
-      rule_group_name = "AWSManagedRulesBotControlRuleSet"
-      override_action = "none"
-      rule_action_overrides = {
-        CategorySearchEngine      = "block" # For discoverability
-        CategoryContentFetcher    = "allow" # For research tools
-        CategoryMonitoring        = "allow" # For reliability
-        CategoryHttpLibrary       = "allow" # For legitimate tools
-        CategoryScraping          = "block" # Prevent bulk harvesting
-        CategoryAdvertising       = "block" # No ads needed
-        CategorySocialMedia       = "block" # Not social content
-        CategoryScrapingFramework = "block" # Prevent bulk harvesting
-        CategoryAI                = "block" # Block AI/ML bots
-      }
-    }
+    # {
+    #   name            = "AWSManagedRulesCommonRuleSet"
+    #   priority        = 200
+    #   rule_group_name = "AWSManagedRulesCommonRuleSet"
+    #   override_action = "none"
+    #   rule_action_overrides = {
+    #     "CrossSiteScripting_QUERYARGUMENTS" = "block"
+    #     "CrossSiteScripting_BODY"           = "block"
+    #     "CrossSiteScripting_COOKIE"         = "block"
+    #     "CrossSiteScripting_URIPATH"        = "block"
+    #   }
+    # },
+    # {
+    #   name            = "AWSManagedRulesSQLiRuleSet"
+    #   priority        = 300
+    #   rule_group_name = "AWSManagedRulesSQLiRuleSet"
+    #   override_action = "none"
+    #   rule_action_overrides = {
+    #     "SQLi_QUERYARGUMENTS" = "block"
+    #     "SQLi_BODY"           = "block"
+    #     "SQLi_COOKIE"         = "block"
+    #     "SQLi_URIPATH"        = "block"
+    #   }
+    # },
+    # {
+    #   name            = "AWSManagedRulesLinuxRuleSet"
+    #   priority        = 400
+    #   rule_group_name = "AWSManagedRulesLinuxRuleSet"
+    #   override_action = "none"
+    #   rule_action_overrides = {
+    #     "LFI_QUERYSTRING" = "block"
+    #     "LFI_URIPATH"     = "block"
+    #     "LFI_HEADER"      = "block"
+    #   }
+    # },
+    # {
+    #   name            = "AWSManagedRulesBotControlRuleSet"
+    #   priority        = 500
+    #   rule_group_name = "AWSManagedRulesBotControlRuleSet"
+    #   override_action = "none"
+    #   rule_action_overrides = {
+    #     CategorySearchEngine      = "block" # For discoverability
+    #     CategoryContentFetcher    = "allow" # For research tools
+    #     CategoryMonitoring        = "allow" # For reliability
+    #     CategoryHttpLibrary       = "allow" # For legitimate tools
+    #     CategoryScraping          = "block" # Prevent bulk harvesting
+    #     CategoryAdvertising       = "block" # No ads needed
+    #     CategorySocialMedia       = "block" # Not social content
+    #     CategoryScrapingFramework = "block" # Prevent bulk harvesting
+    #     CategoryAI                = "block" # Block AI/ML bots
+    #   }
+    # }
   ]
 
   resource_arns = [module.alb.alb_arn]
