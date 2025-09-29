@@ -326,7 +326,83 @@ run "advanced_waf_test" {
   }
 }
 
-# Test 3: Validation Tests
+# Test 3: S3 Logging Configuration
+run "s3_logging_test" {
+  command = plan
+
+  override_data {
+    target = module.web_acl.data.aws_caller_identity.current
+    values = {
+      account_id = "123456789012"
+    }
+  }
+
+  override_data {
+    target = module.web_acl.data.aws_region.current
+    values = {
+      name = "ap-southeast-2"
+    }
+  }
+
+  variables {
+    name_prefix = "test-waf-s3-logging"
+    scope       = "REGIONAL"
+
+    managed_rule_sets = [
+      {
+        name            = "AWSManagedRulesCommonRuleSet"
+        priority        = 1
+        rule_group_name = "AWSManagedRulesCommonRuleSet"
+        override_action = "none"
+      }
+    ]
+
+    resource_arns = ["arn:aws:elasticloadbalancing:ap-southeast-2:123456789012:loadbalancer/app/test-alb/1234567890123456"]
+
+    # Test S3 logging configuration
+    logging = {
+      enabled                  = true
+      s3_bucket_name           = "aws-waf-logs-test-bucket"
+      s3_bucket_prefix         = "waf-logs"
+      redacted_fields          = ["authorization", "cookie"]
+      sampled_requests_enabled = true
+    }
+  }
+
+  # Test that the Web ACL name is correctly set
+  assert {
+    condition     = output.web_acl_name == "test-waf-s3-logging"
+    error_message = "Web ACL name should be 'test-waf-s3-logging'."
+  }
+
+  # Test S3 logging configuration
+  assert {
+    condition     = var.logging.enabled == true
+    error_message = "S3 logging should be enabled."
+  }
+
+  assert {
+    condition     = var.logging.s3_bucket_name == "aws-waf-logs-test-bucket"
+    error_message = "S3 bucket name should be set correctly."
+  }
+
+  assert {
+    condition     = var.logging.s3_bucket_prefix == "waf-logs"
+    error_message = "S3 bucket prefix should be set correctly."
+  }
+
+  assert {
+    condition     = length(var.logging.redacted_fields) == 2
+    error_message = "Should have 2 redacted fields configured."
+  }
+
+  assert {
+    condition     = var.logging.sampled_requests_enabled == true
+    error_message = "Sampled requests should be enabled."
+  }
+}
+
+# Test 4: Validation Tests
 run "validation_tests" {
   command = plan
 

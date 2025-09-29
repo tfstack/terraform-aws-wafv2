@@ -2,6 +2,10 @@
 
 Terraform module to create and manage AWS WAFv2 Web ACLs and resource associations
 
+## Documentation
+
+- **[Logging Configuration Guide](LOGGING.md)** - Comprehensive guide for WAF logging configuration (CloudWatch Logs, S3, and more)
+
 <!-- BEGIN_TF_DOCS -->
 ## Requirements
 

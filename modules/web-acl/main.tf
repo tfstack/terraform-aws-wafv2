@@ -595,10 +595,10 @@ resource "aws_wafv2_web_acl" "main" {
 
 # CloudWatch Log Group for WAF logs (optional) - with destroy protection
 resource "aws_cloudwatch_log_group" "waf_logs" {
-  count = var.logging != null ? (var.logging.enabled && var.logging.cloudwatch_log_group_name != null && var.logging.destroy_log_group == false ? 1 : 0) : 0
+  count = var.logging.enabled && var.logging.cloudwatch_log_group_name != null && var.logging.destroy_log_group == false ? 1 : 0
 
-  name              = var.logging != null ? var.logging.cloudwatch_log_group_name : ""
-  retention_in_days = var.logging != null ? var.logging.cloudwatch_retention_days : 30
+  name              = var.logging.cloudwatch_log_group_name
+  retention_in_days = var.logging.cloudwatch_retention_days
 
   tags = merge(var.tags, {
     Name = "${var.name_prefix}-waf-logs"
@@ -611,10 +611,10 @@ resource "aws_cloudwatch_log_group" "waf_logs" {
 
 # CloudWatch Log Group for WAF logs (optional) - without destroy protection
 resource "aws_cloudwatch_log_group" "waf_logs_destroyable" {
-  count = var.logging != null ? (var.logging.enabled && var.logging.cloudwatch_log_group_name != null && var.logging.destroy_log_group == true ? 1 : 0) : 0
+  count = var.logging.enabled && var.logging.cloudwatch_log_group_name != null && var.logging.destroy_log_group == true ? 1 : 0
 
-  name              = var.logging != null ? var.logging.cloudwatch_log_group_name : ""
-  retention_in_days = var.logging != null ? var.logging.cloudwatch_retention_days : 30
+  name              = var.logging.cloudwatch_log_group_name
+  retention_in_days = var.logging.cloudwatch_retention_days
 
   tags = merge(var.tags, {
     Name = "${var.name_prefix}-waf-logs"
@@ -622,7 +622,7 @@ resource "aws_cloudwatch_log_group" "waf_logs_destroyable" {
 }
 
 resource "aws_wafv2_web_acl_logging_configuration" "main" {
-  count = var.logging != null ? try(var.logging.enabled, false) ? 1 : 0 : 0
+  count = var.logging.enabled ? 1 : 0
 
   resource_arn            = aws_wafv2_web_acl.main.arn
   log_destination_configs = local.waf_log_destinations
@@ -632,6 +632,41 @@ resource "aws_wafv2_web_acl_logging_configuration" "main" {
     content {
       single_header {
         name = redacted_fields.value
+      }
+    }
+  }
+
+  # Logging filter configuration
+  dynamic "logging_filter" {
+    for_each = try(var.logging.logging_filter, null) != null ? [var.logging.logging_filter] : []
+    content {
+      default_behavior = logging_filter.value.default_behavior
+
+      dynamic "filter" {
+        for_each = try(logging_filter.value.filters, [])
+        content {
+          behavior    = filter.value.behavior
+          requirement = filter.value.requirement
+
+          dynamic "condition" {
+            for_each = filter.value.conditions
+            content {
+              dynamic "action_condition" {
+                for_each = try(condition.value.action_condition, null) != null ? [condition.value.action_condition] : []
+                content {
+                  action = action_condition.value.action
+                }
+              }
+
+              dynamic "label_name_condition" {
+                for_each = try(condition.value.label_name_condition, null) != null ? [condition.value.label_name_condition] : []
+                content {
+                  label_name = label_name_condition.value.label_name
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

@@ -178,22 +178,88 @@ variable "ip_sets" {
 variable "logging" {
   description = "Logging configuration for the Web ACL"
   type = object({
-    enabled                   = bool
+    enabled                   = optional(bool, false)
     cloudwatch_log_group_name = optional(string, null)
     cloudwatch_retention_days = optional(number, 30)
+    s3_bucket_name            = optional(string, null)
+    s3_bucket_prefix          = optional(string, "")
     redacted_fields           = optional(list(string), [])
     destroy_log_group         = optional(bool, false)
     sampled_requests_enabled  = optional(bool, true)
+
+    # Advanced logging filter configuration
+    logging_filter = optional(object({
+      default_behavior = string # "KEEP" or "DROP"
+      filters = optional(list(object({
+        behavior = string # "KEEP" or "DROP"
+        conditions = list(object({
+          action_condition = optional(object({
+            action = string # "ALLOW", "BLOCK", "COUNT"
+          }), null)
+          label_name_condition = optional(object({
+            label_name = string
+          }), null)
+        }))
+        requirement = string # "MEETS_ALL" or "MEETS_ANY"
+      })), [])
+    }), null)
   })
-  default = null
+  default = {}
 
   validation {
-    condition = var.logging == null ? true : (
+    condition = (
       var.logging.cloudwatch_log_group_name == null
       || can(regex("^[a-zA-Z0-9][a-zA-Z0-9-]*$", var.logging.cloudwatch_log_group_name))
     )
     error_message = "CloudWatch log group name must be valid."
   }
+
+  validation {
+    condition = (
+      var.logging.s3_bucket_name == null
+      || can(regex("^[a-z0-9][a-z0-9.-]*[a-z0-9]$", var.logging.s3_bucket_name))
+    )
+    error_message = "S3 bucket name must be a valid S3 bucket name."
+  }
+
+  validation {
+    condition = (
+      try(var.logging.logging_filter, null) == null ||
+      contains(["KEEP", "DROP"], try(var.logging.logging_filter.default_behavior, ""))
+    )
+    error_message = "Logging filter default_behavior must be 'KEEP' or 'DROP'."
+  }
+
+  validation {
+    condition = (
+      try(var.logging.logging_filter, null) == null ||
+      alltrue([
+        for filter in try(var.logging.logging_filter.filters, []) :
+        contains(["KEEP", "DROP"], filter.behavior)
+      ])
+    )
+    error_message = "All logging filter behaviors must be 'KEEP' or 'DROP'."
+  }
+
+  validation {
+    condition = (
+      try(var.logging.logging_filter, null) == null ||
+      alltrue([
+        for filter in try(var.logging.logging_filter.filters, []) :
+        contains(["MEETS_ALL", "MEETS_ANY"], filter.requirement)
+      ])
+    )
+    error_message = "All logging filter requirements must be 'MEETS_ALL' or 'MEETS_ANY'."
+  }
+
+  validation {
+    condition = (
+      var.logging.cloudwatch_log_group_name == null ||
+      var.logging.s3_bucket_name == null
+    )
+    error_message = "Only one logging destination can be configured at a time. Specify either cloudwatch_log_group_name OR s3_bucket_name, not both."
+  }
+
 }
 
 # Resource ARNs to associate with the Web ACL
