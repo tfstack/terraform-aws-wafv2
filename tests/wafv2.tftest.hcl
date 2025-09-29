@@ -177,12 +177,13 @@ run "advanced_waf_test" {
 
     rules = [
       {
-        name               = "GeneralRateLimit"
-        priority           = 100
-        action             = "block"
-        statement_type     = "rate_based"
-        limit              = 2000
-        aggregate_key_type = "IP"
+        name                  = "GeneralRateLimit"
+        priority              = 100
+        action                = "block"
+        statement_type        = "rate_based"
+        limit                 = 2000
+        aggregate_key_type    = "IP"
+        evaluation_window_sec = 300
       },
       {
         name                  = "BlockAdminPaths"

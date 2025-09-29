@@ -3,7 +3,7 @@ data "aws_caller_identity" "current" {}
 
 # IP Sets - created from ip_sets variable
 resource "aws_wafv2_ip_set" "sets" {
-  for_each = var.ip_sets
+  for_each = coalesce(var.ip_sets, {})
 
   name               = each.value.name
   scope              = var.scope
@@ -38,7 +38,7 @@ resource "aws_wafv2_web_acl" "main" {
 
   # Custom Response Bodies
   dynamic "custom_response_body" {
-    for_each = var.custom_response_bodies
+    for_each = local.all_custom_response_bodies
     content {
       key          = custom_response_body.value.key
       content      = custom_response_body.value.content
@@ -48,7 +48,7 @@ resource "aws_wafv2_web_acl" "main" {
 
   # AWS Managed Rule Sets
   dynamic "rule" {
-    for_each = var.managed_rule_sets
+    for_each = local.all_managed_rule_sets
     content {
       name     = rule.value.name
       priority = rule.value.priority
@@ -100,9 +100,9 @@ resource "aws_wafv2_web_acl" "main" {
     }
   }
 
-  # All rules are now defined through variables only - no hardcoded rules
+  # All rules
   dynamic "rule" {
-    for_each = var.rules
+    for_each = local.all_rules
     content {
       name     = rule.value.name
       priority = rule.value.priority
@@ -139,24 +139,264 @@ resource "aws_wafv2_web_acl" "main" {
       }
 
       statement {
-        dynamic "rate_based_statement" {
-          for_each = rule.value.statement_type == "rate_based" ? [rule.value] : []
+        # When negated, wrap the appropriate statement in not_statement
+        dynamic "not_statement" {
+          for_each = rule.value.negated && rule.value.statement_type == "rate_based" ? [rule.value] : []
           content {
-            limit              = rate_based_statement.value.limit
-            aggregate_key_type = rate_based_statement.value.aggregate_key_type
+            statement {
+              dynamic "rate_based_statement" {
+                for_each = [not_statement.value]
+                content {
+                  limit                 = rate_based_statement.value.limit
+                  aggregate_key_type    = rate_based_statement.value.aggregate_key_type
+                  evaluation_window_sec = rate_based_statement.value.evaluation_window_sec
+                }
+              }
+            }
+          }
+        }
 
+        dynamic "not_statement" {
+          for_each = rule.value.negated && rule.value.statement_type == "ip_set" ? [rule.value] : []
+          content {
+            statement {
+              dynamic "ip_set_reference_statement" {
+                for_each = [not_statement.value]
+                content {
+                  arn = ip_set_reference_statement.value.ip_set_arn
+                }
+              }
+            }
+          }
+        }
+
+        dynamic "not_statement" {
+          for_each = rule.value.negated && rule.value.statement_type == "geo_match" ? [rule.value] : []
+          content {
+            statement {
+              dynamic "geo_match_statement" {
+                for_each = [not_statement.value]
+                content {
+                  country_codes = geo_match_statement.value.country_codes
+                }
+              }
+            }
+          }
+        }
+
+        dynamic "not_statement" {
+          for_each = (
+            rule.value.negated && rule.value.statement_type == "size_constraint"
+            && try(rule.value.field_to_match, null) != null
+            && (
+              try(rule.value.field_to_match, "") == "body"
+              || try(rule.value.field_to_match, "") == "query_string"
+              || try(rule.value.field_to_match, "") == "uri_path"
+              || (try(rule.value.field_to_match, "") == "header"
+              && try(trim(rule.value.header_name), "") != "")
+            )
+          ) ? [rule.value] : []
+          content {
+            statement {
+              dynamic "size_constraint_statement" {
+                for_each = [not_statement.value]
+                content {
+                  size                = size_constraint_statement.value.size
+                  comparison_operator = size_constraint_statement.value.comparison_operator
+                  dynamic "field_to_match" {
+                    for_each = (
+                      size_constraint_statement.value.field_to_match == "body"
+                      || size_constraint_statement.value.field_to_match == "query_string"
+                      || size_constraint_statement.value.field_to_match == "uri_path"
+                      || (size_constraint_statement.value.field_to_match == "header" && try(trim(size_constraint_statement.value.header_name), "") != "")
+                    ) ? [1] : []
+                    content {
+                      dynamic "body" {
+                        for_each = size_constraint_statement.value.field_to_match == "body" ? [1] : []
+                        content {}
+                      }
+                      dynamic "single_header" {
+                        for_each = (
+                          size_constraint_statement.value.field_to_match == "header"
+                          && try(size_constraint_statement.value.header_name, null) != null
+                          && try(trim(size_constraint_statement.value.header_name), "") != ""
+                        ) ? [1] : []
+                        content {
+                          name = size_constraint_statement.value.header_name
+                        }
+                      }
+                      dynamic "query_string" {
+                        for_each = size_constraint_statement.value.field_to_match == "query_string" ? [1] : []
+                        content {}
+                      }
+                      dynamic "uri_path" {
+                        for_each = (try(size_constraint_statement.value.field_to_match, null) != null && try(size_constraint_statement.value.field_to_match, "") == "uri_path") ? [1] : []
+                        content {}
+                      }
+                    }
+                  }
+                  text_transformation {
+                    priority = 0
+                    type     = "NONE"
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        dynamic "not_statement" {
+          for_each = (
+            rule.value.negated && rule.value.statement_type == "byte_match"
+            && try(rule.value.search_string, null) != null
+            && try(rule.value.search_string, "") != ""
+            && try(rule.value.text_transformation, null) != null
+            && try(rule.value.positional_constraint, null) != null
+            && try(rule.value.field_to_match, null) != null
+            && (
+              try(rule.value.field_to_match, "") == "uri_path"
+              || try(rule.value.field_to_match, "") == "query_string"
+              || try(rule.value.field_to_match, "") == "method"
+              || (try(rule.value.field_to_match, "") == "header"
+              && try(trim(rule.value.header_name), "") != "")
+            )
+          ) ? [rule.value] : []
+          content {
+            statement {
+              dynamic "byte_match_statement" {
+                for_each = [not_statement.value]
+                content {
+                  search_string = byte_match_statement.value.search_string
+                  dynamic "field_to_match" {
+                    for_each = (
+                      try(byte_match_statement.value.field_to_match, null) != null
+                      && (
+                        try(byte_match_statement.value.field_to_match, "") == "uri_path"
+                        || try(byte_match_statement.value.field_to_match, "") == "query_string"
+                        || try(byte_match_statement.value.field_to_match, "") == "method"
+                        || (try(byte_match_statement.value.field_to_match, "") == "header" && try(trim(byte_match_statement.value.header_name), "") != "")
+                      )
+                    ) ? [1] : []
+                    content {
+                      dynamic "uri_path" {
+                        for_each = (try(byte_match_statement.value.field_to_match, null) != null && try(byte_match_statement.value.field_to_match, "") == "uri_path") ? [1] : []
+                        content {}
+                      }
+                      dynamic "query_string" {
+                        for_each = (try(byte_match_statement.value.field_to_match, null) != null && try(byte_match_statement.value.field_to_match, "") == "query_string") ? [1] : []
+                        content {}
+                      }
+                      dynamic "single_header" {
+                        for_each = (
+                          try(byte_match_statement.value.field_to_match, null) != null
+                          && try(byte_match_statement.value.field_to_match, "") == "header"
+                          && try(trim(byte_match_statement.value.header_name), "") != ""
+                        ) ? [1] : []
+                        content {
+                          name = byte_match_statement.value.header_name
+                        }
+                      }
+                      dynamic "method" {
+                        for_each = byte_match_statement.value.field_to_match == "method" ? [1] : []
+                        content {}
+                      }
+                    }
+                  }
+                  text_transformation {
+                    priority = 0
+                    type     = byte_match_statement.value.text_transformation
+                  }
+                  positional_constraint = byte_match_statement.value.positional_constraint
+                }
+              }
+            }
+          }
+        }
+
+        dynamic "not_statement" {
+          for_each = (
+            rule.value.negated && rule.value.statement_type == "regex_match"
+            && try(rule.value.regex_string, null) != null
+            && try(rule.value.regex_string, "") != ""
+            && try(rule.value.field_to_match, null) != null
+            && (
+              try(rule.value.field_to_match, "") == "uri_path"
+              || try(rule.value.field_to_match, "") == "query_string"
+              || try(rule.value.field_to_match, "") == "method"
+              || (try(rule.value.field_to_match, "") == "header"
+              && try(trim(rule.value.header_name), "") != "")
+            )
+          ) ? [rule.value] : []
+          content {
+            statement {
+              dynamic "regex_match_statement" {
+                for_each = [not_statement.value]
+                content {
+                  regex_string = regex_match_statement.value.regex_string
+                  dynamic "field_to_match" {
+                    for_each = (
+                      try(regex_match_statement.value.field_to_match, null) != null
+                      && (
+                        try(regex_match_statement.value.field_to_match, "") == "uri_path"
+                        || try(regex_match_statement.value.field_to_match, "") == "query_string"
+                        || try(regex_match_statement.value.field_to_match, "") == "method"
+                        || (try(regex_match_statement.value.field_to_match, "") == "header" && try(trim(regex_match_statement.value.header_name), "") != "")
+                      )
+                    ) ? [1] : []
+                    content {
+                      dynamic "uri_path" {
+                        for_each = (try(regex_match_statement.value.field_to_match, null) != null && try(regex_match_statement.value.field_to_match, "") == "uri_path") ? [1] : []
+                        content {}
+                      }
+                      dynamic "query_string" {
+                        for_each = (try(regex_match_statement.value.field_to_match, null) != null && try(regex_match_statement.value.field_to_match, "") == "query_string") ? [1] : []
+                        content {}
+                      }
+                      dynamic "single_header" {
+                        for_each = (
+                          try(regex_match_statement.value.field_to_match, null) != null
+                          && try(regex_match_statement.value.field_to_match, "") == "header"
+                          && try(trim(regex_match_statement.value.header_name), "") != ""
+                        ) ? [1] : []
+                        content {
+                          name = regex_match_statement.value.header_name
+                        }
+                      }
+                      dynamic "method" {
+                        for_each = regex_match_statement.value.field_to_match == "method" ? [1] : []
+                        content {}
+                      }
+                    }
+                  }
+                  text_transformation {
+                    priority = 0
+                    type     = "NONE"
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        # Direct statements (when not negated)
+        dynamic "rate_based_statement" {
+          for_each = !rule.value.negated && rule.value.statement_type == "rate_based" ? [rule.value] : []
+          content {
+            limit                 = rate_based_statement.value.limit
+            aggregate_key_type    = rate_based_statement.value.aggregate_key_type
+            evaluation_window_sec = rate_based_statement.value.evaluation_window_sec
           }
         }
 
         dynamic "ip_set_reference_statement" {
-          for_each = rule.value.statement_type == "ip_set" ? [rule.value] : []
+          for_each = !rule.value.negated && rule.value.statement_type == "ip_set" ? [rule.value] : []
           content {
             arn = ip_set_reference_statement.value.ip_set_arn
           }
         }
 
         dynamic "geo_match_statement" {
-          for_each = rule.value.statement_type == "geo_match" ? [rule.value] : []
+          for_each = !rule.value.negated && rule.value.statement_type == "geo_match" ? [rule.value] : []
           content {
             country_codes = geo_match_statement.value.country_codes
           }
@@ -164,7 +404,7 @@ resource "aws_wafv2_web_acl" "main" {
 
         dynamic "size_constraint_statement" {
           for_each = (
-            rule.value.statement_type == "size_constraint"
+            !rule.value.negated && rule.value.statement_type == "size_constraint"
             && try(rule.value.field_to_match, null) != null
             && (
               try(rule.value.field_to_match, "") == "body"
@@ -218,7 +458,7 @@ resource "aws_wafv2_web_acl" "main" {
 
         dynamic "byte_match_statement" {
           for_each = (
-            rule.value.statement_type == "byte_match"
+            !rule.value.negated && rule.value.statement_type == "byte_match"
             && try(rule.value.search_string, null) != null
             && try(rule.value.search_string, "") != ""
             && try(rule.value.text_transformation, null) != null
@@ -276,6 +516,64 @@ resource "aws_wafv2_web_acl" "main" {
             positional_constraint = rule.value.positional_constraint
           }
         }
+
+        dynamic "regex_match_statement" {
+          for_each = (
+            !rule.value.negated && rule.value.statement_type == "regex_match"
+            && try(rule.value.regex_string, null) != null
+            && try(rule.value.regex_string, "") != ""
+            && try(rule.value.field_to_match, null) != null
+            && (
+              try(rule.value.field_to_match, "") == "uri_path"
+              || try(rule.value.field_to_match, "") == "query_string"
+              || try(rule.value.field_to_match, "") == "method"
+              || (try(rule.value.field_to_match, "") == "header"
+              && try(trim(rule.value.header_name), "") != "")
+            )
+          ) ? [rule.value] : []
+          content {
+            regex_string = rule.value.regex_string
+            dynamic "field_to_match" {
+              for_each = (
+                try(rule.value.field_to_match, null) != null
+                && (
+                  try(rule.value.field_to_match, "") == "uri_path"
+                  || try(rule.value.field_to_match, "") == "query_string"
+                  || try(rule.value.field_to_match, "") == "method"
+                  || (try(rule.value.field_to_match, "") == "header" && try(trim(rule.value.header_name), "") != "")
+                )
+              ) ? [1] : []
+              content {
+                dynamic "uri_path" {
+                  for_each = (try(rule.value.field_to_match, null) != null && try(rule.value.field_to_match, "") == "uri_path") ? [1] : []
+                  content {}
+                }
+                dynamic "query_string" {
+                  for_each = (try(rule.value.field_to_match, null) != null && try(rule.value.field_to_match, "") == "query_string") ? [1] : []
+                  content {}
+                }
+                dynamic "single_header" {
+                  for_each = (
+                    try(rule.value.field_to_match, null) != null
+                    && try(rule.value.field_to_match, "") == "header"
+                    && try(trim(rule.value.header_name), "") != ""
+                  ) ? [1] : []
+                  content {
+                    name = rule.value.header_name
+                  }
+                }
+                dynamic "method" {
+                  for_each = rule.value.field_to_match == "method" ? [1] : []
+                  content {}
+                }
+              }
+            }
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
       }
 
       visibility_config {
@@ -285,9 +583,6 @@ resource "aws_wafv2_web_acl" "main" {
       }
     }
   }
-
-
-
 
   visibility_config {
     cloudwatch_metrics_enabled = true
@@ -324,19 +619,6 @@ resource "aws_cloudwatch_log_group" "waf_logs_destroyable" {
   tags = merge(var.tags, {
     Name = "${var.name_prefix}-waf-logs"
   })
-}
-
-# Logging Configuration
-locals {
-  waf_log_destinations = compact([
-    var.logging != null && try(var.logging.cloudwatch_log_group_name, null) != null ? (
-      length(aws_cloudwatch_log_group.waf_logs) > 0 ? aws_cloudwatch_log_group.waf_logs[0].arn :
-      length(aws_cloudwatch_log_group.waf_logs_destroyable) > 0 ? aws_cloudwatch_log_group.waf_logs_destroyable[0].arn :
-      "arn:aws:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:${var.logging != null ? var.logging.cloudwatch_log_group_name : ""}"
-    ) : null,
-  ])
-
-  waf_redacted_fields = var.logging != null ? try(var.logging.redacted_fields, []) : []
 }
 
 resource "aws_wafv2_web_acl_logging_configuration" "main" {

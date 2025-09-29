@@ -4,19 +4,21 @@
 module "web_acl" {
   source = "./modules/web-acl"
 
-  name_prefix            = var.name_prefix
-  description            = var.description
-  scope                  = var.scope
-  default_action         = var.default_action
-  managed_rule_sets      = var.managed_rule_sets
-  rules                  = var.rules
-  ip_sets                = var.ip_sets
-  logging                = var.logging
-  enable_monitoring      = var.enable_monitoring
-  alarm_sns_topic_arn    = var.alarm_sns_topic_arn
-  alarm_threshold        = var.alarm_threshold
-  custom_response_bodies = var.custom_response_bodies
-  tags                   = var.tags
+  name_prefix               = var.name_prefix
+  description               = var.description
+  scope                     = var.scope
+  default_action            = var.default_action
+  managed_rule_sets         = var.managed_rule_sets
+  default_managed_rule_sets = var.default_managed_rule_sets
+  rules                     = var.rules
+  default_rules             = var.default_rules
+  ip_sets                   = var.ip_sets
+  logging                   = var.logging
+  enable_monitoring         = var.enable_monitoring
+  alarm_sns_topic_arn       = var.alarm_sns_topic_arn
+  alarm_threshold           = var.alarm_threshold
+  custom_response_bodies    = var.custom_response_bodies
+  tags                      = var.tags
 }
 
 # Associate Web ACL with resources (if provided)

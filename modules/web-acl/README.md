@@ -7,6 +7,8 @@ This module creates an AWS WAFv2 Web ACL with support for AWS managed rule sets 
 - Support for REGIONAL and CLOUDFRONT scopes
 - AWS managed rule sets integration
 - Custom rules including rate limiting, IP sets, and geo-blocking
+- **Default Security Rules** (method blocking, rate limiting)
+- **Default Managed Rule Sets** (Core Rule Set, SQL Injection, IP Reputation, etc.)
 - **Advanced Rate Limiting** with scope-down statements
 - **Bandwidth Control** (request/response size limits)
 - **IP Allowlist/Blocklist** functionality
@@ -26,14 +28,20 @@ module "web_acl" {
   scope       = "REGIONAL"
   default_action = "allow"
 
-  managed_rule_sets = [
-    {
-      name            = "AWSManagedRulesCommonRuleSet"
-      priority        = 1
-      rule_group_name = "AWSManagedRulesCommonRuleSet"
-      override_action = "none"
-    }
-  ]
+  # Enable default managed rule sets
+  default_managed_rule_sets = {
+    core_rule_set    = true
+    known_bad_inputs = true
+    sql_injection    = true
+    ip_reputation    = true
+    anonymous_ip     = true
+  }
+
+  # Enable default security rules
+  default_rules = {
+    block_disallowed_methods = true
+    general_rate_limit       = true
+  }
 
   tags = {
     Environment = "production"
@@ -41,17 +49,17 @@ module "web_acl" {
 }
 ```
 
-### Advanced Usage with Rate Limiting & Bandwidth Control
+### Custom Managed Rule Sets
 
 ```hcl
 module "web_acl" {
   source = "./modules/web-acl"
 
-  name_prefix = "advanced-waf"
+  name_prefix = "my-app-waf"
   scope       = "REGIONAL"
   default_action = "allow"
 
-  # AWS Managed Rules
+  # Custom managed rule sets with specific priorities
   managed_rule_sets = [
     {
       name            = "AWSManagedRulesCommonRuleSet"
@@ -67,46 +75,81 @@ module "web_acl" {
     }
   ]
 
+  tags = {
+    Environment = "production"
+  }
+}
+```
+
+### Advanced Usage with Default Rules and Custom Configuration
+
+```hcl
+module "web_acl" {
+  source = "./modules/web-acl"
+
+  name_prefix = "advanced-waf"
+  scope       = "REGIONAL"
+  default_action = "allow"
+
+  # Enable default managed rule sets
+  default_managed_rule_sets = {
+    core_rule_set    = true
+    known_bad_inputs = true
+    sql_injection    = true
+    ip_reputation    = true
+    anonymous_ip     = true
+  }
+
+  # Enable default security rules
+  default_rules = {
+    block_disallowed_methods = true
+    general_rate_limit       = true
+  }
+
+  # Additional custom managed rule sets
+  managed_rule_sets = [
+    {
+      name            = "AWSManagedRulesBotControlRuleSet"
+      priority        = 200
+      rule_group_name = "AWSManagedRulesBotControlRuleSet"
+      override_action = "none"
+    }
+  ]
+
+  # Custom rules for specific requirements
+  rules = [
+    {
+      name                     = "BlockSpecificIPs"
+      priority                 = 1
+      action                   = "block"
+      statement_type           = "ip_set"
+      ip_set_arn               = aws_wafv2_ip_set.blocked_ips.arn
+      custom_response_body_key = "blocked_ip_message"
+      response_code            = 403
+      response_headers         = {}
+    }
+  ]
+
   # IP Sets for Allowlist/Blocklist
-  blocked_ips = [
-    "10.0.0.0/8",        # Internal networks
-    "172.16.0.0/12",     # Internal networks
-    "192.168.0.0/16",    # Internal networks
-    "127.0.0.0/8"        # Localhost
-  ]
-
-  allowed_ips = [
-    "203.0.113.0/24",    # Your office network
-    "198.51.100.0/24",   # Your VPN network
-  ]
-
-  # Rate Limiting Configuration
-  rate_limiting = {
-    enabled        = true
-    general_limit  = 2000  # 2000 requests per 5 minutes
-    api_limit      = 500   # 500 requests per 5 minutes for API
-    download_limit = 100   # 100 requests per 5 minutes for downloads
-    api_paths      = ["/api/"]
-    download_paths = ["/download/"]
+  ip_sets = {
+    blocked_ips = {
+      name      = "blocked-ips"
+      addresses = [
+        "10.0.0.0/8",        # Internal networks
+        "172.16.0.0/12",     # Internal networks
+        "192.168.0.0/16",    # Internal networks
+        "127.0.0.0/8"        # Localhost
+      ]
+    }
   }
 
-  # Bandwidth Control Configuration
-  bandwidth_control = {
-    enabled               = true
-    max_request_size      = 1048576  # 1MB max request size
-    max_query_string_size = 1024     # 1KB max query string
-    max_header_size       = 8192     # 8KB max header size
-  }
-
-  # Advanced Security Rules
-  advanced_security = {
-    enabled                        = true
-    block_admin_paths              = true
-    admin_paths                    = ["/admin", "/administrator", "/wp-admin"]
-    block_dangerous_methods        = true
-    dangerous_methods              = ["TRACE", "OPTIONS"]
-    block_suspicious_user_agents   = true
-    suspicious_user_agents         = ["sqlmap", "nikto", "nmap"]
+  # Custom response bodies
+  custom_response_bodies = {
+    blocked_ip_message = {
+      key          = "blocked_ip_message"
+      content      = "Access denied from this IP address."
+      content_type = "TEXT_PLAIN"
+    }
   }
 
   # CloudWatch Logging
@@ -118,13 +161,60 @@ module "web_acl" {
     destroy_log_group         = true
   }
 
-  resource_arns = ["arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/1234567890123456"]
-
   tags = {
     Environment = "production"
   }
 }
 ```
+
+## Default Rules and Managed Rule Sets
+
+### Default Security Rules
+
+The module provides two default security rules that can be easily enabled:
+
+#### `block_disallowed_methods`
+
+- **Priority**: 5
+- **Action**: Block
+- **Purpose**: Blocks HTTP methods other than GET, HEAD, OPTIONS, POST, PUT
+- **Response**: 405 Method Not Allowed
+
+#### `general_rate_limit`
+
+- **Priority**: 10
+- **Action**: Block
+- **Purpose**: Rate limiting at 1000 requests per 5 minutes per IP
+- **Response**: 429 Too Many Requests with Retry-After header
+
+### Default Managed Rule Sets
+
+The module provides five commonly used AWS managed rule sets that can be easily enabled:
+
+#### `core_rule_set` (Priority 100)
+
+- **Rule Group**: AWSManagedRulesCommonRuleSet
+- **Purpose**: Core web application security rules
+
+#### `known_bad_inputs` (Priority 101)
+
+- **Rule Group**: AWSManagedRulesKnownBadInputsRuleSet
+- **Purpose**: Blocks known bad inputs and attack patterns
+
+#### `sql_injection` (Priority 103)
+
+- **Rule Group**: AWSManagedRulesSQLiRuleSet
+- **Purpose**: SQL injection attack protection
+
+#### `ip_reputation` (Priority 104)
+
+- **Rule Group**: AWSManagedRulesAmazonIpReputationList
+- **Purpose**: Blocks requests from known malicious IPs
+
+#### `anonymous_ip` (Priority 105)
+
+- **Rule Group**: AWSManagedRulesAnonymousIpList
+- **Purpose**: Blocks requests from anonymous IP services (VPNs, proxies, etc.)
 
 ## Inputs
 
@@ -134,8 +224,15 @@ module "web_acl" {
 | scope | Scope of the Web ACL (REGIONAL or CLOUDFRONT) | `string` | `"REGIONAL"` | no |
 | default_action | Default action for the Web ACL (allow or block) | `string` | `"allow"` | no |
 | managed_rule_sets | List of AWS managed rule sets to include | `list(object)` | `[]` | no |
-| custom_rules | List of custom rules to include | `list(object)` | `[]` | no |
+| default_managed_rule_sets | Enable/disable default managed rule sets | `object` | `{}` | no |
+| rules | List of custom rules to include | `list(object)` | `[]` | no |
+| default_rules | Enable/disable default security rules | `object` | `{}` | no |
+| ip_sets | IP sets that can be referenced in rules | `map(object)` | `{}` | no |
+| custom_response_bodies | Custom response bodies for WAF rules | `map(object)` | `{}` | no |
 | logging | Logging configuration for the Web ACL | `object` | `null` | no |
+| enable_monitoring | Enable CloudWatch monitoring for all rules | `bool` | `false` | no |
+| alarm_sns_topic_arn | SNS topic ARN for alarm notifications | `string` | `null` | no |
+| alarm_threshold | Threshold for rule alarms (blocked requests per 5 minutes) | `number` | `10` | no |
 | tags | Tags to apply to the Web ACL | `map(string)` | `{}` | no |
 
 ## Outputs
