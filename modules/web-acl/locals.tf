@@ -108,12 +108,15 @@ locals {
 
   # Logging Configuration
   waf_log_destinations = compact([
-    var.logging != null && try(var.logging.cloudwatch_log_group_name, null) != null ? (
+    # CloudWatch logging (if cloudwatch_log_group_name is specified)
+    try(var.logging.cloudwatch_log_group_name, null) != null ? (
       length(aws_cloudwatch_log_group.waf_logs) > 0 ? aws_cloudwatch_log_group.waf_logs[0].arn :
       length(aws_cloudwatch_log_group.waf_logs_destroyable) > 0 ? aws_cloudwatch_log_group.waf_logs_destroyable[0].arn :
-      "arn:aws:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:${var.logging != null ? var.logging.cloudwatch_log_group_name : ""}"
+      "arn:aws:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:${var.logging.cloudwatch_log_group_name}"
     ) : null,
+    # S3 logging (if s3_bucket_name is specified and cloudwatch is not)
+    try(var.logging.s3_bucket_name, null) != null && try(var.logging.cloudwatch_log_group_name, null) == null ? "arn:aws:s3:::${var.logging.s3_bucket_name}" : null,
   ])
 
-  waf_redacted_fields = var.logging != null ? try(var.logging.redacted_fields, []) : []
+  waf_redacted_fields = try(var.logging.redacted_fields, [])
 }
