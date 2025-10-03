@@ -183,6 +183,8 @@ variable "logging" {
     cloudwatch_retention_days = optional(number, 30)
     s3_bucket_name            = optional(string, null)
     s3_bucket_prefix          = optional(string, "")
+    kinesis_firehose_arn      = optional(string, null)
+    kinesis_firehose_role_arn = optional(string, null)
     redacted_fields           = optional(list(string), [])
     destroy_log_group         = optional(bool, false)
     sampled_requests_enabled  = optional(bool, true)
@@ -204,7 +206,9 @@ variable "logging" {
       })), [])
     }), null)
   })
-  default = {}
+  default = {
+    enabled = false
+  }
 
   validation {
     condition = (
@@ -254,10 +258,19 @@ variable "logging" {
 
   validation {
     condition = (
-      var.logging.cloudwatch_log_group_name == null ||
-      var.logging.s3_bucket_name == null
+      (try(var.logging.cloudwatch_log_group_name, null) != null ? 1 : 0) +
+      (try(var.logging.s3_bucket_name, null) != null ? 1 : 0) +
+      (try(var.logging.kinesis_firehose_arn, null) != null ? 1 : 0)
+    ) <= 1
+    error_message = "Only one logging destination can be configured at a time. Specify either cloudwatch_log_group_name, s3_bucket_name, or kinesis_firehose_arn, not multiple."
+  }
+
+  validation {
+    condition = (
+      try(var.logging.kinesis_firehose_arn, null) == null ||
+      try(var.logging.kinesis_firehose_role_arn, null) != null
     )
-    error_message = "Only one logging destination can be configured at a time. Specify either cloudwatch_log_group_name OR s3_bucket_name, not both."
+    error_message = "kinesis_firehose_role_arn must be provided when kinesis_firehose_arn is specified."
   }
 
 }

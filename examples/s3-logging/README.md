@@ -1,4 +1,4 @@
-# WAF S3 Logging Demo - Extensive Configuration Example
+# WAF with S3 Logging Extensive Configuration Example
 
 This example demonstrates **comprehensive S3 logging configuration** for AWS WAFv2 with a focus on all available logging options. This is a direct S3 logging implementation (not via Kinesis Firehose).
 
