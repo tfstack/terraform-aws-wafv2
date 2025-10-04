@@ -21,7 +21,7 @@ The terraform-aws-wafv2 module supports multiple logging destinations:
 
 - **CloudWatch Logs**: Real-time logging with immediate access
 - **S3**: Cost-effective long-term storage and analytics
-- **Kinesis Firehose**: Real-time streaming to multiple destinations *(coming soon)*
+- **Kinesis Firehose**: Real-time streaming to multiple destinations
 
 > **⚠️ Important**: Only one logging destination can be active at a time per Web ACL. The module validates this constraint and will fail if multiple destinations are specified simultaneously.
 
@@ -127,27 +127,144 @@ resource "aws_s3_bucket_policy" "waf_logs" {
 
 ## Kinesis Firehose Logging
 
-> **Coming Soon**: Kinesis Firehose logging support will be added in a future release.
-
-### Planned Features
-
-- Real-time streaming to multiple destinations
-- Integration with S3, Redshift, Elasticsearch, and Splunk
-- Data transformation capabilities
-- Automatic retry and buffering
-- Cost-effective for high-volume logging
-
-### Future Configuration Example
+### Kinesis Firehose Configuration
 
 ```hcl
-# This will be available in a future release
 logging = {
   enabled = true
-  kinesis_firehose_arn = "arn:aws:firehose:region:account:deliverystream/waf-logs"
+  kinesis_firehose_arn = "arn:aws:firehose:region:account:deliverystream/aws-waf-logs-stream-name"
+  kinesis_firehose_role_arn = "arn:aws:iam::account:role/waf-logging-role"
   redacted_fields = ["authorization", "cookie"]
   sampled_requests_enabled = true
 }
 ```
+
+### Kinesis Firehose Features
+
+- **Real-time streaming**: Logs are streamed to Kinesis Firehose in near real-time
+- **Multiple destinations**: Stream to S3, Redshift, Elasticsearch, and Splunk
+- **Data transformation**: Lambda integration for log transformation
+- **Automatic retry**: Built-in retry mechanism for failed deliveries
+- **Cost-effective**: Pay-per-use pricing for high-volume logging
+- **Buffering**: Configurable buffer size and interval for optimal performance
+
+### Kinesis Firehose Stream Requirements
+
+- **Naming**: Stream name must start with `aws-waf-logs-` for WAF logging
+- **IAM Role**: Requires dedicated IAM role for WAF to write to Firehose
+- **Permissions**: WAF needs `firehose:PutRecord` and `firehose:PutRecordBatch` permissions
+
+### IAM Role Configuration
+
+```hcl
+# IAM Role for WAF to write to Kinesis Firehose
+resource "aws_iam_role" "waf_logging" {
+  name = "waf-logging-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "wafv2.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# IAM Policy for WAF to write to Firehose
+resource "aws_iam_role_policy" "waf_logging" {
+  name = "waf-logging-policy"
+  role = aws_iam_role.waf_logging.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "firehose:PutRecord",
+          "firehose:PutRecordBatch"
+        ]
+        Resource = "arn:aws:firehose:region:account:deliverystream/aws-waf-logs-stream-name"
+      }
+    ]
+  })
+}
+```
+
+### Kinesis Firehose Destinations
+
+#### S3 Destination
+
+```hcl
+# Kinesis Firehose with S3 destination
+module "kinesis_firehose" {
+  source = "tfstack/kinesis-firehose/aws"
+
+  name        = "aws-waf-logs-my-stream"
+  destination = "extended_s3"
+
+  s3_configuration = {
+    role_arn            = aws_iam_role.firehose.arn
+    bucket_arn          = aws_s3_bucket.waf_logs.arn
+    prefix              = "waf-logs/!{timestamp:yyyy/MM/dd/}"
+    error_output_prefix = "errors/!{firehose:error-output-type}/"
+    buffer_interval     = 60
+    buffer_size         = 10
+    compression_format  = "GZIP"
+  }
+
+  create_cloudwatch_log_group         = true
+  cloudwatch_log_group_retention_days = 7
+}
+```
+
+#### Elasticsearch Destination
+
+```hcl
+# Kinesis Firehose with Elasticsearch destination
+module "kinesis_firehose" {
+  source = "tfstack/kinesis-firehose/aws"
+
+  name        = "aws-waf-logs-elasticsearch"
+  destination = "elasticsearch"
+
+  elasticsearch_configuration = {
+    domain_arn = aws_elasticsearch_domain.waf_logs.arn
+    index_name = "waf-logs"
+    type_name  = "waf-log"
+    role_arn   = aws_iam_role.firehose.arn
+  }
+}
+```
+
+### Log Path Structure
+
+Kinesis Firehose can deliver logs to various destinations with different path structures:
+
+**S3 Destination:**
+
+```plaintext
+waf-logs/
+├── 2024/01/15/          # Year/Month/Day
+│   ├── 14/              # Hour
+│   │   ├── 20240115T140000Z_000000000000_000000000000_000000000000.gz
+│   │   └── 20240115T140100Z_000000000000_000000000000_000000000000.gz
+│   └── 15/
+└── errors/
+    └── ProcessingFailed/
+        └── 2024/01/15/14/
+```
+
+**Elasticsearch Destination:**
+
+- Index: `waf-logs-YYYY.MM.DD`
+- Type: `waf-log`
+- Real-time searchable logs
 
 ## Advanced Logging Features
 
@@ -338,6 +455,106 @@ alarm_sns_topic_arn = "arn:aws:sns:region:account:topic"
 alarm_threshold = 10
 ```
 
+### Example 4: Kinesis Firehose with S3 Destination
+
+```hcl
+# Kinesis Firehose delivery stream
+module "kinesis_firehose" {
+  source = "tfstack/kinesis-firehose/aws"
+
+  name        = "aws-waf-logs-production"
+  destination = "extended_s3"
+
+  s3_configuration = {
+    role_arn            = aws_iam_role.firehose.arn
+    bucket_arn          = aws_s3_bucket.waf_logs.arn
+    prefix              = "waf-logs/!{timestamp:yyyy/MM/dd/}"
+    error_output_prefix = "errors/!{firehose:error-output-type}/"
+    buffer_interval     = 60
+    buffer_size         = 10
+    compression_format  = "GZIP"
+  }
+
+  create_cloudwatch_log_group         = true
+  cloudwatch_log_group_retention_days = 7
+}
+
+# WAF with Kinesis Firehose logging
+module "waf" {
+  source = "tfstack/wafv2/aws"
+
+  name_prefix = "production"
+  scope       = "REGIONAL"
+
+  logging = {
+    enabled = true
+    kinesis_firehose_arn      = module.kinesis_firehose.delivery_stream_arn
+    kinesis_firehose_role_arn = aws_iam_role.waf_logging.arn
+
+    redacted_fields = [
+      "authorization",
+      "cookie",
+      "set-cookie",
+      "x-api-key"
+    ]
+
+    sampled_requests_enabled = true
+
+    logging_filter = {
+      default_behavior = "KEEP"
+      filters = [
+        {
+          behavior    = "KEEP"
+          requirement = "MEETS_ALL"
+          conditions = [
+            {
+              action_condition = {
+                action = "BLOCK"
+              }
+              label_name_condition = null
+            }
+          ]
+        }
+      ]
+    }
+  }
+
+  resource_arns = [aws_lb.main.arn]
+}
+```
+
+### Example 5: Kinesis Firehose with Multiple Destinations
+
+```hcl
+# Kinesis Firehose with S3 and Elasticsearch
+module "kinesis_firehose" {
+  source = "tfstack/kinesis-firehose/aws"
+
+  name        = "aws-waf-logs-multi-dest"
+  destination = "extended_s3"
+
+  s3_configuration = {
+    role_arn            = aws_iam_role.firehose.arn
+    bucket_arn          = aws_s3_bucket.waf_logs.arn
+    prefix              = "waf-logs/!{timestamp:yyyy/MM/dd/}"
+    error_output_prefix = "errors/"
+    buffer_interval     = 60
+    buffer_size         = 5
+    compression_format  = "GZIP"
+  }
+
+  # Optional: Add Elasticsearch as secondary destination
+  elasticsearch_configuration = {
+    domain_arn = aws_elasticsearch_domain.waf_logs.arn
+    index_name = "waf-logs"
+    type_name  = "waf-log"
+    role_arn   = aws_iam_role.firehose.arn
+  }
+
+  create_cloudwatch_log_group = true
+}
+```
+
 ## Best Practices
 
 ### 1. Logging Destination Selection
@@ -359,15 +576,25 @@ alarm_threshold = 10
 **Use Kinesis Firehose when:**
 
 - Real-time streaming to multiple destinations
-- Integration with third-party SIEM tools
+- Integration with third-party SIEM tools (Splunk, Elasticsearch)
 - Need data transformation before storage
 - High-volume, real-time processing requirements
+- Want to stream to both S3 and analytics platforms
+- Need automatic retry and buffering capabilities
 
-### 2. S3 Bucket Naming
+### 2. Naming Conventions
+
+**S3 Bucket Naming:**
 
 - **Required**: Must start with `aws-waf-logs-`
 - **Recommended**: Include environment and purpose
 - **Example**: `aws-waf-logs-prod-security-2024`
+
+**Kinesis Firehose Stream Naming:**
+
+- **Required**: Must start with `aws-waf-logs-` for WAF logging
+- **Recommended**: Include environment and purpose
+- **Example**: `aws-waf-logs-prod-stream-2024`
 
 ### 3. Field Redaction Strategy
 
@@ -506,6 +733,66 @@ logging = {
 }
 ```
 
+#### 5. Kinesis Firehose Stream Name Error
+
+**Error**: `The ARN isn't valid. A valid ARN begins with arn:`
+
+**Solution**: Ensure Kinesis Firehose stream name starts with `aws-waf-logs-`
+
+```hcl
+# ❌ Wrong
+kinesis_firehose_arn = "arn:aws:firehose:region:account:deliverystream/my-waf-logs"
+
+# ✅ Correct
+kinesis_firehose_arn = "arn:aws:firehose:region:account:deliverystream/aws-waf-logs-my-stream"
+```
+
+#### 6. Kinesis Firehose IAM Permissions Error
+
+**Error**: WAF cannot write to Kinesis Firehose stream
+
+**Solution**: Ensure proper IAM role and permissions:
+
+```hcl
+# IAM Role for WAF logging
+resource "aws_iam_role" "waf_logging" {
+  name = "waf-logging-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "wafv2.amazonaws.com"  # Correct service principal
+        }
+      }
+    ]
+  })
+}
+
+# IAM Policy for Firehose permissions
+resource "aws_iam_role_policy" "waf_logging" {
+  name = "waf-logging-policy"
+  role = aws_iam_role.waf_logging.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "firehose:PutRecord",
+          "firehose:PutRecordBatch"
+        ]
+        Resource = "arn:aws:firehose:region:account:deliverystream/aws-waf-logs-stream-name"
+      }
+    ]
+  })
+}
+```
+
 ### Monitoring and Verification
 
 #### 1. Check WAF Logging Configuration
@@ -535,12 +822,55 @@ curl "https://your-alb/test?q=union+select+*+from+users"
 aws s3 ls s3://aws-waf-logs-bucket/AWSLogs/ --recursive | grep $(date +%Y/%m/%d)
 ```
 
+#### 4. Verify Kinesis Firehose Logging
+
+```bash
+# Check Firehose delivery stream status
+aws firehose describe-delivery-stream --delivery-stream-name aws-waf-logs-my-stream
+
+# Check Firehose CloudWatch logs
+aws logs describe-log-streams --log-group-name "/aws/kinesisfirehose/aws-waf-logs-my-stream"
+
+# Check S3 destination for logs
+aws s3 ls s3://my-waf-logs-bucket/waf-logs/ --recursive
+
+# Test Firehose delivery
+curl "https://your-alb/test?q=union+select+*+from+users"
+sleep 60  # Wait for Firehose buffering
+aws s3 ls s3://my-waf-logs-bucket/waf-logs/ --recursive | tail -5
+```
+
+#### 5. Monitor Kinesis Firehose Metrics
+
+```bash
+# Check Firehose delivery metrics
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/Firehose \
+  --metric-name DeliveryToS3.Records \
+  --dimensions Name=DeliveryStreamName,Value=aws-waf-logs-my-stream \
+  --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
+  --period 300 \
+  --statistics Sum
+
+# Check Firehose error metrics
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/Firehose \
+  --metric-name DeliveryToS3.Success \
+  --dimensions Name=DeliveryStreamName,Value=aws-waf-logs-my-stream \
+  --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
+  --period 300 \
+  --statistics Sum
+```
+
 ## Examples
 
 See the [examples](examples/) directory for complete working examples:
 
 - [S3 Logging Example](examples/s3-logging/) - Complete S3 logging setup
 - [CloudWatch Logging Example](examples/waf-defaults/) - CloudWatch logs setup
+- [Kinesis Firehose Logging Example](examples/kinesis-firehose-logging/) - Complete Kinesis Firehose setup with S3 destination
 
 ## Related Documentation
 
