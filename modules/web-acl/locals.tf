@@ -106,17 +106,34 @@ locals {
 
   all_managed_rule_sets = concat(coalesce(var.managed_rule_sets, []), [for rule_set in local.default_managed_rule_sets : rule_set if rule_set != null])
 
+  # Normalize logging configuration to ensure all optional fields have defaults
+  normalized_logging = {
+    enabled                   = try(var.logging.enabled, false)
+    cloudwatch_log_group_name = try(var.logging.cloudwatch_log_group_name, null)
+    cloudwatch_retention_days = try(var.logging.cloudwatch_retention_days, 30)
+    s3_bucket_name            = try(var.logging.s3_bucket_name, null)
+    s3_bucket_prefix          = try(var.logging.s3_bucket_prefix, "")
+    kinesis_firehose_arn      = try(var.logging.kinesis_firehose_arn, null)
+    kinesis_firehose_role_arn = try(var.logging.kinesis_firehose_role_arn, null)
+    redacted_fields           = try(var.logging.redacted_fields, [])
+    destroy_log_group         = try(var.logging.destroy_log_group, false)
+    sampled_requests_enabled  = try(var.logging.sampled_requests_enabled, true)
+    logging_filter            = try(var.logging.logging_filter, null)
+  }
+
   # Logging Configuration
   waf_log_destinations = compact([
     # CloudWatch logging (if cloudwatch_log_group_name is specified)
-    try(var.logging.cloudwatch_log_group_name, null) != null ? (
+    local.normalized_logging.cloudwatch_log_group_name != null ? (
       length(aws_cloudwatch_log_group.waf_logs) > 0 ? aws_cloudwatch_log_group.waf_logs[0].arn :
       length(aws_cloudwatch_log_group.waf_logs_destroyable) > 0 ? aws_cloudwatch_log_group.waf_logs_destroyable[0].arn :
-      "arn:aws:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:${var.logging.cloudwatch_log_group_name}"
+      "arn:aws:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:${local.normalized_logging.cloudwatch_log_group_name}"
     ) : null,
-    # S3 logging (if s3_bucket_name is specified and cloudwatch is not)
-    try(var.logging.s3_bucket_name, null) != null && try(var.logging.cloudwatch_log_group_name, null) == null ? "arn:aws:s3:::${var.logging.s3_bucket_name}" : null,
+    # S3 logging (if s3_bucket_name is specified and cloudwatch/firehose is not)
+    local.normalized_logging.s3_bucket_name != null && local.normalized_logging.cloudwatch_log_group_name == null && local.normalized_logging.kinesis_firehose_arn == null ? "arn:aws:s3:::${local.normalized_logging.s3_bucket_name}" : null,
+    # Kinesis Data Firehose logging (if kinesis_firehose_arn is specified and cloudwatch/s3 is not)
+    local.normalized_logging.kinesis_firehose_arn != null && local.normalized_logging.cloudwatch_log_group_name == null && local.normalized_logging.s3_bucket_name == null ? local.normalized_logging.kinesis_firehose_arn : null,
   ])
 
-  waf_redacted_fields = try(var.logging.redacted_fields, [])
+  waf_redacted_fields = local.normalized_logging.redacted_fields
 }

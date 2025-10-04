@@ -1,4 +1,5 @@
 terraform {
+  required_version = ">= 1.0"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -11,15 +12,15 @@ provider "aws" {
   region = "ap-southeast-2"
 }
 
-data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
 
 ############################################
 # Random Suffix for Resource Names
 ############################################
 
 resource "random_string" "suffix" {
-  length  = 4
+  length  = 8
   special = false
   upper   = false
 }
@@ -33,7 +34,7 @@ locals {
   enable_dns_hostnames = true
   enable_https         = false
 
-  name            = "waf"
+  name            = "waf-firehose"
   base_name       = local.suffix != "" ? "${local.name}-${local.suffix}" : local.name
   suffix          = random_string.suffix.result
   private_subnets = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
@@ -72,8 +73,8 @@ module "vpc" {
 ############################################
 
 # IAM Role for Lambda
-resource "aws_iam_role" "lambda_role" {
-  name = "${local.base_name}-lambda-role"
+resource "aws_iam_role" "lambda" {
+  name = "${local.base_name}-lambda"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -91,12 +92,6 @@ resource "aws_iam_role" "lambda_role" {
   tags = local.tags
 }
 
-# IAM Policy for Lambda execution
-resource "aws_iam_role_policy_attachment" "lambda_basic" {
-  role       = aws_iam_role.lambda_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-}
-
 data "archive_file" "lambda_function" {
   type        = "zip"
   source_file = "${path.module}/external/lambda_function.js"
@@ -107,7 +102,7 @@ data "archive_file" "lambda_function" {
 resource "aws_lambda_function" "api" {
   filename      = data.archive_file.lambda_function.output_path
   function_name = "${local.base_name}-api"
-  role          = aws_iam_role.lambda_role.arn
+  role          = aws_iam_role.lambda.arn
   handler       = "lambda_function.handler"
   runtime       = "nodejs20.x"
   timeout       = 30
@@ -194,43 +189,119 @@ module "s3_bucket" {
 }
 
 ############################################
-# S3 Bucket Policy for WAF Logging
+# IAM Role for Kinesis Data Firehose
 ############################################
 
-# S3 bucket policy to allow WAF to write logs
-resource "aws_s3_bucket_policy" "waf_logs" {
-  bucket = module.s3_bucket.bucket_name
+resource "aws_iam_role" "firehose" {
+  name = "${local.base_name}-firehose"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "firehose.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "firehose" {
+  name = "${local.base_name}-firehose"
+  role = aws_iam_role.firehose.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AWSLogDeliveryWrite"
         Effect = "Allow"
-        Principal = {
-          Service = "delivery.logs.amazonaws.com"
-        }
-        Action   = "s3:PutObject"
-        Resource = "${module.s3_bucket.bucket_arn}/AWSLogs/*"
-        Condition = {
-          StringEquals = {
-            "s3:x-amz-acl" = "bucket-owner-full-control"
-          }
-        }
+        Action = [
+          "s3:AbortMultipartUpload",
+          "s3:GetBucketLocation",
+          "s3:GetObject",
+          "s3:ListBucket",
+          "s3:ListBucketMultipartUploads",
+          "s3:PutObject"
+        ]
+        Resource = [
+          module.s3_bucket.bucket_arn,
+          "${module.s3_bucket.bucket_arn}/*"
+        ]
       },
+    ]
+  })
+}
+
+module "kinesis-firehose" {
+  source = "tfstack/kinesis-firehose/aws"
+
+  # Note: "aws-waf-logs" prefix is required by AWS for WAF logging to Kinesis Data Firehose
+  name        = "aws-waf-logs-${local.base_name}-firehose"
+  destination = "extended_s3"
+
+  s3_configuration = {
+    role_arn            = aws_iam_role.firehose.arn
+    bucket_arn          = module.s3_bucket.bucket_arn
+    prefix              = "waf-logs/!{timestamp:yyyy/MM/dd/}"
+    error_output_prefix = "errors/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/"
+    buffer_interval     = 60
+    buffer_size         = 10
+    compression_format  = "GZIP"
+
+  }
+
+  create_cloudwatch_log_group         = true
+  cloudwatch_log_group_retention_days = 1
+  cloudwatch_log_group_force_destroy  = true
+
+  tags = local.tags
+}
+
+############################################
+# IAM Role for WAF Logging
+############################################
+
+resource "aws_iam_role" "waf_logging" {
+  name = "${local.base_name}-waf-logging"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
       {
-        Sid    = "AWSLogDeliveryAclCheck"
+        Action = "sts:AssumeRole"
         Effect = "Allow"
         Principal = {
-          Service = "delivery.logs.amazonaws.com"
+          Service = "wafv2.amazonaws.com"
         }
-        Action   = "s3:GetBucketAcl"
-        Resource = module.s3_bucket.bucket_arn
       }
     ]
   })
 
-  depends_on = [module.s3_bucket]
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "waf_logging" {
+  name = "${local.base_name}-waf-logging"
+  role = aws_iam_role.waf_logging.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "firehose:PutRecord",
+          "firehose:PutRecordBatch"
+        ]
+        Resource = module.kinesis-firehose.delivery_stream_arn
+      }
+    ]
+  })
 }
 
 ############################################
@@ -241,18 +312,18 @@ module "waf" {
   source = "../.."
 
   name_prefix    = local.base_name
-  description    = "WAF with S3 logging demonstration"
+  description    = "WAF with Kinesis Firehose logging demonstration"
   scope          = "REGIONAL"
   default_action = "allow"
 
-  # Enable logging to S3 - This demonstrates S3 logging configuration options
+  # Enable logging to Kinesis Firehose
   logging = {
     # Enable WAF logging
     enabled = true
 
-    # S3 bucket configuration - using the S3 bucket created above
-    s3_bucket_name   = module.s3_bucket.bucket_name
-    s3_bucket_prefix = "waf-logs" # Prefix for organizing logs within the bucket
+    # Kinesis Firehose configuration
+    kinesis_firehose_arn      = "arn:aws:firehose:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:deliverystream/aws-waf-logs-${local.base_name}-firehose"
+    kinesis_firehose_role_arn = aws_iam_role.waf_logging.arn
 
     # Redact sensitive fields from logs
     # Common fields to redact: authorization, cookie, set-cookie, x-api-key, etc.
@@ -313,7 +384,7 @@ module "waf" {
     # Rule 1: Block SQL injection attempts
     {
       name                     = "BlockSQLInjection"
-      priority                 = 1
+      priority                 = 11
       action                   = "block" # BLOCK actions are logged
       statement_type           = "byte_match"
       search_string            = "union select"
@@ -336,53 +407,14 @@ module "waf" {
   ]
 
   # Associate with the ALB created above
-  resource_arns = [module.alb.alb_arn]
+  resource_arns = [
+    module.alb.alb_arn
+  ]
 
   tags = local.tags
 
-  depends_on = [aws_s3_bucket_policy.waf_logs]
-}
-
-############################################
-# Outputs
-############################################
-
-output "waf_web_acl_arn" {
-  description = "ARN of the WAF Web ACL"
-  value       = module.waf.web_acl_arn
-}
-
-output "waf_web_acl_id" {
-  description = "ID of the WAF Web ACL"
-  value       = module.waf.web_acl_id
-}
-
-output "s3_bucket_name" {
-  description = "Name of the S3 bucket for WAF logs"
-  value       = module.s3_bucket.bucket_name
-}
-
-output "s3_bucket_arn" {
-  description = "ARN of the S3 bucket for WAF logs"
-  value       = module.s3_bucket.bucket_arn
-}
-
-output "log_prefix" {
-  description = "Prefix used for WAF logs in S3"
-  value       = "waf-logs"
-}
-
-output "alb_alb_dns" {
-  description = "ALB DNS name"
-  value       = module.alb.alb_dns
-}
-
-output "alb_arn" {
-  description = "ARN of the ALB"
-  value       = module.alb.alb_arn
-}
-
-output "lambda_function_name" {
-  description = "Name of the Lambda function"
-  value       = aws_lambda_function.api.function_name
+  depends_on = [
+    aws_iam_role_policy.waf_logging,
+    module.kinesis-firehose
+  ]
 }

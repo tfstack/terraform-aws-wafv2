@@ -672,6 +672,28 @@ resource "aws_wafv2_web_acl_logging_configuration" "main" {
   }
 }
 
+# IAM role policy for WAF to write to Kinesis Data Firehose
+resource "aws_iam_role_policy" "waf_firehose_logging" {
+  count = var.logging.enabled && try(var.logging.kinesis_firehose_arn, null) != null ? 1 : 0
+
+  name = "${var.name_prefix}-waf-firehose-logging-policy"
+  role = try(var.logging.kinesis_firehose_role_arn, null) != null ? split("/", var.logging.kinesis_firehose_role_arn)[1] : null
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "firehose:PutRecord",
+          "firehose:PutRecordBatch"
+        ]
+        Resource = var.logging.kinesis_firehose_arn
+      }
+    ]
+  })
+}
+
 # CloudWatch alarms for each rule
 resource "aws_cloudwatch_metric_alarm" "rule_alarms" {
   for_each = var.enable_monitoring ? {
